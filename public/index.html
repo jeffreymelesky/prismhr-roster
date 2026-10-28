@@ -22,7 +22,14 @@
   header .wrap { display: flex; align-items: center; justify-content: space-between; height: 60px; gap: 12px; }
   .brand { font-weight: 700; letter-spacing: .02em; }
   .badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
-  h1 { font-size: 24px; margin: 28px 0 4px; }
+  h1 { font-size: 24px; margin: 0; }
+  .titlebar { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px 20px; flex-wrap: wrap; margin: 28px 0 4px; }
+  .refresh { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  #refreshBtn { font: inherit; font-weight: 600; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent);
+                background: var(--accent); color: #fff; cursor: pointer; }
+  #refreshBtn:disabled { opacity: .55; cursor: default; }
+  .refresh-msg { font-size: 13px; color: var(--muted); min-height: 1em; text-align: right; }
+  @media (max-width: 560px) { .refresh { align-items: flex-start; } .refresh-msg { text-align: left; } }
   .sub { color: var(--muted); margin: 0 0 20px; }
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
   .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
@@ -55,7 +62,13 @@
 </div></header>
 
 <main class="wrap">
-  <h1 id="title">Loading…</h1>
+  <div class="titlebar">
+    <h1 id="title">Loading…</h1>
+    <div class="refresh">
+      <button id="refreshBtn" type="button">↻ Refresh from PrismHR</button>
+      <div id="refreshMsg" class="refresh-msg" aria-live="polite"></div>
+    </div>
+  </div>
   <p class="sub">Data flows PrismHR → sync server (fixed IP) → Supabase → this page. This page never contacts PrismHR directly.</p>
 
   <section class="stats">
@@ -93,11 +106,70 @@ const STATUS = { A: "Active", L: "Leave", LOA: "Leave of absence", FMLA: "FMLA l
 const label = (s) => STATUS[(s || "").toUpperCase()] || s || "—";
 const kind = (s) => { s = (s || "").toUpperCase(); return s === "A" ? "A" : s === "T" ? "T" : "L"; };
 
-async function load() {
+let pollTimer = null, pollStarted = 0;
+const fmtTime = (s) => new Date(s).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+async function fetchRoster() {
+  const r = await fetch("/api/roster", { credentials: "same-origin", cache: "no-store" });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+
+// Reflect the latest refresh request; keep polling while one is queued or running.
+function showRefreshState(req) {
+  const btn = $("refreshBtn"), msg = $("refreshMsg");
+  const active = req && (req.status === "pending" || req.status === "running");
+  btn.disabled = !!active;
+  if (active) {
+    msg.textContent = req.status === "running" ? "Pulling the latest data from PrismHR…" : `Refresh requested at ${fmtTime(req.requested_at)}. Usually done within a minute.`;
+    if (!pollTimer) { pollStarted = Date.now(); pollTimer = setInterval(poll, 5000); }
+  } else {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (req && req.status === "failed") msg.innerHTML = `<span class="err">Refresh failed: ${esc(req.message || "unknown error")}</span>`;
+    else if (req && req.status === "done" && Date.now() - Date.parse(req.processed_at) < 120000) msg.textContent = `Updated at ${fmtTime(req.processed_at)}.`;
+    else msg.textContent = "";
+  }
+}
+
+async function poll() {
+  if (Date.now() - pollStarted > 180000) {
+    clearInterval(pollTimer); pollTimer = null;
+    $("refreshBtn").disabled = false;
+    $("refreshMsg").textContent = "Still waiting on the sync server. Try again in a few minutes.";
+    return;
+  }
+  try { const j = await fetchRoster(); if (!j.lastRequest || !["pending", "running"].includes(j.lastRequest.status)) apply(j); else showRefreshState(j.lastRequest); } catch (e) {}
+}
+
+$("refreshBtn").addEventListener("click", async () => {
+  const btn = $("refreshBtn"), msg = $("refreshMsg");
+  btn.disabled = true; msg.textContent = "Requesting refresh…";
   try {
-    const r = await fetch("/api/roster", { credentials: "same-origin" });
+    const r = await fetch("/api/refresh", { method: "POST", credentials: "same-origin" });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || r.status);
+    if (!j.queued && j.reason === "cooldown") {
+      btn.disabled = false; msg.textContent = "A refresh just ran. Please wait a minute before trying again.";
+      return;
+    }
+    showRefreshState(j.request);
+  } catch (e) {
+    btn.disabled = false; msg.innerHTML = `<span class="err">Couldn't request refresh: ${esc(e.message)}</span>`;
+  }
+});
+
+async function load() {
+  try {
+    apply(await fetchRoster());
+  } catch (e) {
+    $("title").textContent = "Couldn't load roster";
+    $("rows").innerHTML = `<tr><td colspan="5" class="msg err">${esc(e.message)}</td></tr>`;
+  }
+}
+
+function apply(j) {
+    const keepStatus = $("status").value;
     data = j.employees || [];
     $("title").textContent = j.client.id ? `${j.client.name} (${j.client.id})` : j.client.name;
     const n = (k) => data.filter((e) => kind(e.status) === k).length;
@@ -108,11 +180,9 @@ async function load() {
     $("s-sync").innerHTML = ls ? `${new Date(ls.finished_at).toLocaleString()}<br><span class="${ls.ok ? "" : "err"}">${esc(ls.ok ? "OK" : "Failed: " + ls.message)}</span>` : "Never";
     const statuses = [...new Set(data.map((e) => e.status).filter(Boolean))].sort();
     $("status").innerHTML = '<option value="">All statuses</option>' + statuses.map((s) => `<option value="${esc(s)}">${esc(label(s))}</option>`).join("");
+    if (statuses.includes(keepStatus)) $("status").value = keepStatus;
     render();
-  } catch (e) {
-    $("title").textContent = "Couldn't load roster";
-    $("rows").innerHTML = `<tr><td colspan="5" class="msg err">${esc(e.message)}</td></tr>`;
-  }
+    showRefreshState(j.lastRequest);
 }
 
 function render() {
