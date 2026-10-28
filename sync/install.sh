@@ -43,8 +43,12 @@ SUPABASE_SECRET_KEY=$SKEY
 EOF
 chmod 600 "$DIR/.env"
 
-# Hourly sync at minute 17, logging to /var/log/prismhr-sync.log
-echo "17 * * * * root /usr/bin/python3 $DIR/prismhr_sync.py >> /var/log/prismhr-sync.log 2>&1" > /etc/cron.d/prismhr-sync
+# Every minute: sync only if someone pressed "Refresh" on the website (no PrismHR contact otherwise).
+# Nightly at 07:17 UTC (about 3:17 AM Eastern): full sync. flock prevents overlapping runs.
+cat > /etc/cron.d/prismhr-sync <<CRON
+* * * * * root /usr/bin/flock -n /run/prismhr-sync.lock /usr/bin/python3 $DIR/prismhr_sync.py --if-requested >> /var/log/prismhr-sync.log 2>&1
+17 7 * * * root /usr/bin/flock -w 120 /run/prismhr-sync.lock /usr/bin/python3 $DIR/prismhr_sync.py >> /var/log/prismhr-sync.log 2>&1
+CRON
 chmod 644 /etc/cron.d/prismhr-sync
 
 echo
