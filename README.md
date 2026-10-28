@@ -3,7 +3,7 @@
 Read-only roster for one PrismHR client, shown at **prismhr.emplovaplans.com** behind Cloudflare Access.
 
 ```
-PrismHR API ──(fixed IP, hourly)──> sync server ──> Supabase ──> Cloudflare Pages site (/api/roster)
+PrismHR API ──(fixed IP, nightly + on demand)──> sync server ──> Supabase ──> Cloudflare Pages site (/api/roster)
                                                                  └─ Cloudflare Access (@emplova.com only)
 ```
 
@@ -17,9 +17,11 @@ PrismHR API ──(fixed IP, hourly)──> sync server ──> Supabase ──>
 |---|---|
 | `supabase/schema.sql` | Run once in Supabase SQL Editor |
 | `sync/prismhr_sync.py` | Sync script (Python 3 standard library only) |
-| `sync/install.sh` | One-command installer for an Ubuntu server; prompts for secrets, sets an hourly cron |
+| `sync/install.sh` | One-command installer for an Ubuntu server; prompts for secrets, sets the nightly sync + every-minute refresh check |
 | `public/index.html` | The page |
 | `functions/api/roster.js` | Cloudflare Pages Function that reads Supabase |
+| `functions/api/refresh.js` | Records a "refresh now" request |
+| `lib/shared.js` | Shared login check (Access JWT) and Supabase helper |
 
 ## Cloudflare Pages settings
 - Build command: *(none)* · Build output directory: `public` · Root directory: *(blank / repo root)*
@@ -30,9 +32,14 @@ Allowed methods: `LoginService.createPeoSession`, `LoginService.keepAlive`, `Log
 `ClientMasterService.getClientList`, `EmployeeService.getEmployeeList`, `EmployeeService.getEmployee#PERSON|CLIENT`.
 Allowed IPs: the sync server's fixed IP.
 
+## Refresh button
+The page's **Refresh from PrismHR** button calls `POST /api/refresh`, which adds a row to `prism_sync_requests`
+(login required, one request at a time, at most one per minute). The sync server checks every minute
+(`prismhr_sync.py --if-requested`) and only contacts PrismHR when a request is pending. A full sync also runs nightly.
+
 ## Sync server
 ```
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/jeffreymelesky/prismhr-roster/main/sync/install.sh)"
 python3 /opt/prismhr-sync/prismhr_sync.py      # run manually
-tail -f /var/log/prismhr-sync.log              # watch hourly runs
+tail -f /var/log/prismhr-sync.log              # watch runs
 ```
