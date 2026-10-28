@@ -168,7 +168,8 @@ class Supa:
 
 # ---------------- main ----------------
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
     cfg = load_env(ENV_FILE)
     need = ["PRISM_BASE_URL", "PRISM_USER", "PRISM_PASSWORD", "PRISM_PEO_ID",
             "PRISM_CLIENT_ID", "SUPABASE_URL", "SUPABASE_SECRET_KEY"]
@@ -179,6 +180,31 @@ def main():
 
     client = cfg["PRISM_CLIENT_ID"]
     supa = Supa(cfg["SUPABASE_URL"], cfg["SUPABASE_SECRET_KEY"])
+
+    # --if-requested: run only when someone pressed "Refresh" on the website.
+    # Called every minute by cron; exits silently (no PrismHR contact) when nothing is pending.
+    req_ids = []
+    if "--if-requested" in argv:
+        pending = supa.call("GET", "prism_sync_requests?select=id&status=eq.pending&order=id.asc") or []
+        req_ids = [r["id"] for r in pending]
+        if not req_ids:
+            return 0
+        supa.call("PATCH", "prism_sync_requests?id=in.(" + ",".join(map(str, req_ids)) + ")",
+                  {"status": "running"}, prefer="return=minimal")
+
+    ok, msg = run_sync(cfg, supa, client)
+
+    if req_ids:
+        supa.call("PATCH", "prism_sync_requests?id=in.(" + ",".join(map(str, req_ids)) + ")", {
+            "status": "done" if ok else "failed",
+            "processed_at": datetime.now(timezone.utc).isoformat(),
+            "message": msg[:500],
+        }, prefer="return=minimal")
+    print(("OK: " if ok else "FAILED: ") + msg)
+    return 0 if ok else 1
+
+
+def run_sync(cfg, supa, client):
     run = supa.call("POST", "prism_sync_runs", {"client_id": client}, prefer="return=representation")
     run_id = run[0]["id"] if run else None
     started = datetime.now(timezone.utc).isoformat()
@@ -227,8 +253,7 @@ def main():
             "ok": ok, "employee_count": count, "message": msg,
             "field_names": ", ".join(sorted(field_names))[:4000],
         }, prefer="return=minimal")
-    print(("OK: " if ok else "FAILED: ") + msg)
-    return 0 if ok else 1
+    return ok, msg
 
 
 if __name__ == "__main__":
