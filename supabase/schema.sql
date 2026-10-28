@@ -37,3 +37,17 @@ revoke all on public.prism_sync_runs from anon, authenticated;
 grant select, insert, update, delete on public.prism_employees to service_role;
 grant select, insert, update, delete on public.prism_sync_runs to service_role;
 grant usage, select on sequence public.prism_sync_runs_id_seq to service_role;
+
+-- "Refresh now" requests from the website; the sync server checks for pending ones every minute.
+create table if not exists public.prism_sync_requests (
+  id            bigserial primary key,
+  requested_at  timestamptz not null default now(),
+  requested_by  text,
+  status        text not null default 'pending',   -- pending | running | done | failed
+  processed_at  timestamptz,
+  message       text
+);
+alter table public.prism_sync_requests enable row level security;
+revoke all on public.prism_sync_requests from anon, authenticated;
+grant select, insert, update, delete on public.prism_sync_requests to service_role;
+grant usage, select on sequence public.prism_sync_requests_id_seq to service_role;
