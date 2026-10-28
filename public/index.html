@@ -24,7 +24,7 @@
   .badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
   h1 { font-size: 24px; margin: 28px 0 4px; }
   .sub { color: var(--muted); margin: 0 0 20px; }
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
   .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
   .stat .k { color: var(--muted); font-size: 13px; }
   .stat .v { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -33,6 +33,7 @@
   input[type=search], select { font: inherit; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line);
                                background: var(--card); color: var(--text); }
   input[type=search] { flex: 1; min-width: 200px; }
+  .chk { display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
   .tablebox { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -58,15 +59,16 @@
   <p class="sub">Data flows PrismHR → sync server (fixed IP) → Supabase → this page. This page never contacts PrismHR directly.</p>
 
   <section class="stats">
-    <div class="stat"><div class="k">Employees</div><div class="v" id="s-total">–</div></div>
     <div class="stat"><div class="k">Active</div><div class="v" id="s-active">–</div></div>
-    <div class="stat"><div class="k">Other statuses</div><div class="v" id="s-other">–</div></div>
+    <div class="stat"><div class="k">On leave</div><div class="v" id="s-leave">–</div></div>
+    <div class="stat"><div class="k">Terminated</div><div class="v" id="s-term">–</div></div>
     <div class="stat"><div class="k">Last sync</div><div class="v small" id="s-sync">–</div></div>
   </section>
 
   <div class="toolbar">
     <input type="search" id="q" placeholder="Search name, ID or job title…" aria-label="Search">
     <select id="status" aria-label="Filter by status"><option value="">All statuses</option></select>
+    <label class="chk"><input type="checkbox" id="showTerm"> Show terminated</label>
   </div>
 
   <div class="tablebox">
@@ -86,7 +88,10 @@
 let data = [], sortKey = "last_name", sortDir = 1;
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const isActive = (s) => /^a($|ctive)/i.test(s || "");
+// PrismHR status codes -> readable labels (unknown codes are shown as-is)
+const STATUS = { A: "Active", L: "Leave", LOA: "Leave of absence", FMLA: "FMLA leave", T: "Terminated", I: "Inactive", P: "Pending", S: "Suspended" };
+const label = (s) => STATUS[(s || "").toUpperCase()] || s || "—";
+const kind = (s) => { s = (s || "").toUpperCase(); return s === "A" ? "A" : s === "T" ? "T" : "L"; };
 
 async function load() {
   try {
@@ -95,14 +100,14 @@ async function load() {
     if (!r.ok) throw new Error(j.error || r.status);
     data = j.employees || [];
     $("title").textContent = j.client.id ? `${j.client.name} (${j.client.id})` : j.client.name;
-    $("s-total").textContent = data.length;
-    const active = data.filter((e) => isActive(e.status)).length;
-    $("s-active").textContent = active;
-    $("s-other").textContent = data.length - active;
+    const n = (k) => data.filter((e) => kind(e.status) === k).length;
+    $("s-active").textContent = n("A");
+    $("s-leave").textContent = n("L");
+    $("s-term").textContent = n("T");
     const ls = j.lastSync;
     $("s-sync").innerHTML = ls ? `${new Date(ls.finished_at).toLocaleString()}<br><span class="${ls.ok ? "" : "err"}">${esc(ls.ok ? "OK" : "Failed: " + ls.message)}</span>` : "Never";
     const statuses = [...new Set(data.map((e) => e.status).filter(Boolean))].sort();
-    $("status").innerHTML = '<option value="">All statuses</option>' + statuses.map((s) => `<option>${esc(s)}</option>`).join("");
+    $("status").innerHTML = '<option value="">All statuses</option>' + statuses.map((s) => `<option value="${esc(s)}">${esc(label(s))}</option>`).join("");
     render();
   } catch (e) {
     $("title").textContent = "Couldn't load roster";
@@ -111,22 +116,23 @@ async function load() {
 }
 
 function render() {
-  const q = $("q").value.trim().toLowerCase(), st = $("status").value;
+  const q = $("q").value.trim().toLowerCase(), st = $("status").value, showT = $("showTerm").checked;
   const rows = data
-    .filter((e) => !st || e.status === st)
+    .filter((e) => st ? e.status === st : (showT || kind(e.status) !== "T"))
     .filter((e) => !q || [e.first_name, e.last_name, e.employee_id, e.job_title].join(" ").toLowerCase().includes(q))
     .sort((a, b) => String(a[sortKey] ?? "").localeCompare(String(b[sortKey] ?? ""), undefined, { numeric: true }) * sortDir);
   $("rows").innerHTML = rows.length ? rows.map((e) => `<tr>
       <td>${esc([e.last_name, e.first_name].filter(Boolean).join(", "))}</td>
       <td class="id">${esc(e.employee_id)}</td>
       <td>${esc(e.job_title || "—")}</td>
-      <td><span class="pill ${esc((e.status || "")[0] || "")}">${esc(e.status || "—")}</span></td>
+      <td><span class="pill ${kind(e.status)}">${esc(label(e.status))}</span></td>
       <td>${esc(e.hire_date || "—")}</td></tr>`).join("")
     : '<tr><td colspan="5" class="msg">No matching employees.</td></tr>';
 }
 
 $("q").addEventListener("input", render);
 $("status").addEventListener("change", render);
+$("showTerm").addEventListener("change", render);
 document.querySelectorAll("th[data-k]").forEach((th) => th.addEventListener("click", () => {
   sortDir = sortKey === th.dataset.k ? -sortDir : 1; sortKey = th.dataset.k; render();
 }));
